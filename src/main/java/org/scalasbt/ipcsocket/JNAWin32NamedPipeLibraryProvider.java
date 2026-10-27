@@ -30,7 +30,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
 
     static Handle make(final HANDLE handle) throws IOException {
       if (handle == Win32NamedPipeLibrary.INVALID_HANDLE_VALUE) {
-        throw new IOException("Invalid handle");
+        throw new IOException("Invalid handle (" + Native.getLastError() + ")");
       }
       return new JNAHandle(handle);
     }
@@ -109,7 +109,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     IntByReference n = new IntByReference();
     boolean ok = delegate.PeekNamedPipe(handle, null, 0, null, n, null);
     if (!ok) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       throw new IOException("PeekNamedPipe() failed: " + lastError);
     }
     return n.getValue();
@@ -139,7 +139,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     boolean timedOut = false;
     boolean immediate = delegate.ReadFile(handle, readBuffer, len, null, olap.getPointer());
     if (!immediate) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       if (lastError != WinError.ERROR_IO_PENDING) {
         throw new IOException("ReadFile() failed: " + lastError);
       }
@@ -154,7 +154,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     }
     IntByReference r = new IntByReference();
     if (!delegate.GetOverlappedResult(handle, olap.getPointer(), r, true)) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       if (timedOut) {
         throw new SocketTimeoutException("ReadFile() timed out after " + timeoutMillis + " ms");
       }
@@ -194,14 +194,14 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
 
     boolean immediate = delegate.WriteFile(handle, data, len, null, olap.getPointer());
     if (!immediate) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       if (lastError != WinError.ERROR_IO_PENDING) {
         throw new IOException("WriteFile() failed: " + lastError);
       }
     }
     IntByReference written = new IntByReference();
     if (!delegate.GetOverlappedResult(handle, olap.getPointer(), written, true)) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       throw new IOException("GetOverlappedResult() failed for write operation: " + lastError);
     }
     // Keeps data reachable until the write has completed
@@ -234,9 +234,13 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     return JNAHandle.make(delegate.CreateEvent(null, bManualReset, bInitialState, lpName));
   }
 
+  /**
+   * The error JNA saved right after the last native call on this thread. Calling kernel32's
+   * GetLastError through JNA can return a value the JVM has overwritten since.
+   */
   @Override
   public int GetLastError() {
-    return delegate.GetLastError();
+    return Native.getLastError();
   }
 
   @Override
