@@ -32,6 +32,7 @@ public class UnixDomainServerSocket extends ServerSocket {
   private static final int PF_LOCAL = 1;
   private static final int AF_LOCAL = 1;
   private static final int SOCK_STREAM = 1;
+  private static final int SHUT_RDWR = 2;
 
   // We use an AtomicInteger to prevent a race in this situation which
   // could happen if fd were just an int:
@@ -167,8 +168,15 @@ public class UnixDomainServerSocket extends ServerSocket {
     }
     try {
 
-      // Ensure any pending call to accept() fails.
-      provider.close(fd.getAndSet(-1));
+      // Ensure any pending call to accept() fails. On Linux, closing the socket doesn't wake a
+      // blocked accept(), but shutting it down does.
+      int socketFd = fd.getAndSet(-1);
+      try {
+        provider.shutdown(socketFd, SHUT_RDWR);
+      } catch (NativeErrorException e) {
+        // macOS doesn't support shutdown on a listening socket, but closing wakes accept() there
+      }
+      provider.close(socketFd);
       isClosed = true;
     } catch (NativeErrorException e) {
       throw new IOException(e);
