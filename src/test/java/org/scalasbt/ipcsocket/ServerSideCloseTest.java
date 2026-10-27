@@ -16,8 +16,9 @@ public class ServerSideCloseTest extends BaseSocketSetup {
     withSocket(
         sock -> {
           ServerSocket serverSocket = newServerSocket(sock);
-          try (Socket client = newClientSocket(sock)) {
-            Socket peer = serverSocket.accept();
+          SocketPair pair = SocketPair.connect(this, serverSocket, sock);
+          try (Socket client = pair.client) {
+            Socket peer = pair.peer;
             peer.getOutputStream().write(new byte[] {1, 2, 3, 4});
             CompletableFuture<Void> close =
                 CompletableFuture.runAsync(

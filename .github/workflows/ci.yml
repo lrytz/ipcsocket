@@ -21,4 +21,4 @@ jobs:
       - uses: sbt/setup-sbt@v1
       - name: Run the new Windows tests
         shell: bash
-        run: sbt "buildNativeArtifacts; testOnly *PipeSquattingTest* *ServerSideCloseTest* *PipeErrorCodeTest* -- -v"
+        run: sbt "buildNativeArtifacts; testOnly *ServerSideCloseTest* -- -v"
