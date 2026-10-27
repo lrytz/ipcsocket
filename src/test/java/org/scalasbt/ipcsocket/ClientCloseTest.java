@@ -13,8 +13,9 @@ public class ClientCloseTest extends BaseSocketSetup {
         sock -> {
           ServerSocket serverSocket = newServerSocket(sock);
           try {
-            Socket client = newClientSocket(sock);
-            Socket peer = serverSocket.accept();
+            SocketPair pair = SocketPair.connect(this, serverSocket, sock);
+            Socket client = pair.client;
+            Socket peer = pair.peer;
             client.close();
             client.close();
             assertTrue(client.isClosed());
