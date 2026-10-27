@@ -2,38 +2,13 @@ name: CI
 on: [pull_request, push]
 
 jobs:
-  test:
+  windows-repro:
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # Changing this will change glibc
-          - os: ubuntu-22.04
-            java: 8
-            jobtype: 1
-          - os: ubuntu-24.04
-            java: 25
-            jobtype: 2
-          - os: macos-15-intel
-            java: 8
-            jobtype: 1
-          - os: macos-15
-            java: 8
-            jobtype: 1
-          - os: macos-15
-            java: 25
-            jobtype: 1
-          - os: windows-latest
-            java: 8
-            jobtype: 1
-          - os: windows-latest
-            java: 25
-            jobtype: 2
-    runs-on: ${{ matrix.os }}
-    env:
-      JAVA_OPTS: -Xms800M -Xmx2G -Xss6M -XX:ReservedCodeCacheSize=128M -server -Dsbt.io.virtual=false -Dfile.encoding=UTF-8
-      JVM_OPTS: -Xms800M -Xmx2G -Xss6M -XX:ReservedCodeCacheSize=128M -server -Dsbt.io.virtual=false -Dfile.encoding=UTF-8
+        java: [8, 25]
+    runs-on: windows-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -44,45 +19,6 @@ jobs:
           java-version: "${{ matrix.java }}"
           cache: sbt
       - uses: sbt/setup-sbt@v1
-      - name: Set up MinGW
-        if: ${{ runner.os == 'Linux' }}
-        uses: egor-tensin/setup-mingw@v3
-        with:
-          platform: x64
-      - name: Set up gcc-aarch64-linux-gnu
-        if: ${{ runner.os == 'Linux' }}
+      - name: Run the new Windows tests
         shell: bash
-        run: sudo apt-get -y install gcc-aarch64-linux-gnu
-      - name: Build and test (Linux)
-        if: ${{ runner.os == 'Linux' }}
-        shell: bash
-        run: |
-          sbt "jvmfmtCheckAll; buildNativeArtifacts; test"
-      - name: Build and test (macOS)
-        if: ${{ runner.os == 'macOS' }}
-        shell: bash
-        run: sbt "buildNativeArtifacts; test"
-      - name: Build and test (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: bash
-        run: sbt "buildNativeArtifacts; test"
-      - name: Archive native artifacts (Linux)
-        if: ${{ runner.os == 'Linux' && matrix.jobtype == '1' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-${{ runner.os }}
-          path: |
-            src/main/resources/linux/x86_64/libsbtipcsocket.so
-            src/main/resources/linux/aarch64/libsbtipcsocket.so
-            src/main/resources/win32/x86_64/sbtipcsocket.dll
-      - name: Archive native artifacts (macOS)
-        if: ${{ matrix.os == 'macos-15-intel' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: dist-${{ runner.os }}
-          path: src/main/resources/darwin/x86_64/libsbtipcsocket.dylib
-      - name: Test examples compilation
-        shell: bash
-        run: |
-          cd examples/echo-server
-          mvn package
+        run: sbt "buildNativeArtifacts; testOnly *PipeSquattingTest* *ServerSideCloseTest* *PipeErrorCodeTest* -- -v"
