@@ -118,6 +118,22 @@ public class UnixDomainServerSocket extends ServerSocket {
     }
   }
 
+  @Override
+  public void bind(SocketAddress endpoint, int backlog) throws IOException {
+    // the backlog was given to the constructor
+    bind(endpoint);
+  }
+
+  @Override
+  public synchronized boolean isBound() {
+    return isBound;
+  }
+
+  @Override
+  public synchronized boolean isClosed() {
+    return isClosed;
+  }
+
   public synchronized void bind(SocketAddress endpoint) throws IOException {
     if (!(endpoint instanceof UnixDomainServerSocketAddress)) {
       throw new IllegalArgumentException(
@@ -163,7 +179,7 @@ public class UnixDomainServerSocket extends ServerSocket {
 
   public synchronized void close() throws IOException {
     if (isClosed) {
-      throw new IllegalStateException("Socket is already closed");
+      return;
     }
     try {
 
