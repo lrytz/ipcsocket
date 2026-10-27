@@ -82,6 +82,13 @@ public interface Win32NamedPipeLibrary extends Library, WinNT {
       IntByReference lpNumberOfBytesWritten,
       Pointer lpOverlapped);
 
+  boolean WriteFile(
+      HANDLE hFile,
+      Memory lpBuffer,
+      int nNumberOfBytesToWrite,
+      IntByReference lpNumberOfBytesWritten,
+      Pointer lpOverlapped);
+
   boolean CloseHandle(HANDLE hObject);
 
   boolean GetOverlappedResult(
