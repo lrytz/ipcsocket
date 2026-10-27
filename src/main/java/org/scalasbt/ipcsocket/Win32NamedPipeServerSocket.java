@@ -153,23 +153,7 @@ public class Win32NamedPipeServerSocket extends ServerSocket {
     if (closed.get()) {
       throw new SocketException("Socket is closed");
     }
-    Handle handle;
-    try {
-      handle =
-          provider.CreateNamedPipe(
-              path,
-              provider.PIPE_ACCESS_DUPLEX() | provider.FILE_FLAG_OVERLAPPED(),
-              0,
-              maxInstances,
-              BUFFER_SIZE,
-              BUFFER_SIZE,
-              0,
-              provider.FILE_ALL_ACCESS(),
-              securityLevel);
-    } catch (final IOException e) {
-      throw new IOException("Could not create named pipe " + path, e);
-    }
-    openHandles.add(handle);
+    Handle handle = createPipeInstance();
 
     Handle connWaitable = provider.CreateEvent(true, false, null);
     Overlapped overlapped = provider.NewOverlapped(connWaitable);
@@ -214,6 +198,37 @@ public class Win32NamedPipeServerSocket extends ServerSocket {
     }
     connectedHandles.add(handle);
     return new Win32NamedPipeSocket(handle, closeCallback, requireStrictLength, useJNI);
+  }
+
+  /**
+   * Creates an instance of the pipe for accept() to wait on. Another principal who created the pipe
+   * name first chooses its DACL, so a new instance could join their pipe, and clients could then
+   * connect to their instances. Unless this server already holds an instance, the new one must be
+   * the first.
+   */
+  private synchronized Handle createPipeInstance() throws IOException {
+    int openMode = provider.PIPE_ACCESS_DUPLEX() | provider.FILE_FLAG_OVERLAPPED();
+    if (openHandles.isEmpty() && connectedHandles.isEmpty()) {
+      openMode |= provider.FILE_FLAG_FIRST_PIPE_INSTANCE();
+    }
+    Handle handle;
+    try {
+      handle =
+          provider.CreateNamedPipe(
+              path,
+              openMode,
+              0,
+              maxInstances,
+              BUFFER_SIZE,
+              BUFFER_SIZE,
+              0,
+              provider.FILE_ALL_ACCESS(),
+              securityLevel);
+    } catch (final IOException e) {
+      throw new IOException("Could not create named pipe " + path, e);
+    }
+    openHandles.add(handle);
+    return handle;
   }
 
   public void close() throws IOException {
