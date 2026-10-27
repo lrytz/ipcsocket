@@ -21,6 +21,7 @@ import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -119,6 +120,22 @@ public class UnixDomainServerSocket extends ServerSocket {
     }
   }
 
+  @Override
+  public void bind(SocketAddress endpoint, int backlog) throws IOException {
+    // the backlog was given to the constructor
+    bind(endpoint);
+  }
+
+  @Override
+  public synchronized boolean isBound() {
+    return isBound;
+  }
+
+  @Override
+  public synchronized boolean isClosed() {
+    return isClosed;
+  }
+
   public synchronized void bind(SocketAddress endpoint) throws IOException {
     if (!(endpoint instanceof UnixDomainServerSocketAddress)) {
       throw new IllegalArgumentException(
@@ -147,11 +164,11 @@ public class UnixDomainServerSocket extends ServerSocket {
     // call to UnixDomainSocketLibrary.accept() will block
     // indefinitely, causing another thread's call to close() to deadlock.
     synchronized (this) {
-      if (!isBound) {
-        throw new IllegalStateException("Socket is not bound");
-      }
       if (isClosed) {
-        throw new IllegalStateException("Socket is already closed");
+        throw new SocketException("Socket is closed");
+      }
+      if (!isBound) {
+        throw new SocketException("Socket is not bound yet");
       }
     }
     try {
@@ -164,7 +181,7 @@ public class UnixDomainServerSocket extends ServerSocket {
 
   public synchronized void close() throws IOException {
     if (isClosed) {
-      throw new IllegalStateException("Socket is already closed");
+      return;
     }
     try {
 
