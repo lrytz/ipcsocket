@@ -21,8 +21,9 @@ public class ForwardingSocketChannelTest extends BaseSocketSetup {
         sock -> {
           ServerSocket serverSocket = newServerSocket(sock);
           try {
-            SocketChannel channel = SocketChannels.fromSocket(newClientSocket(sock));
-            Socket peer = serverSocket.accept();
+            SocketPair pair = SocketPair.connect(this, serverSocket, sock);
+            SocketChannel channel = SocketChannels.fromSocket(pair.client);
+            Socket peer = pair.peer;
             try {
               test.run(channel, peer);
             } finally {
