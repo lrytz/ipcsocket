@@ -122,7 +122,11 @@ Test / testGrouping := {
     .map {
       case (name, tests) =>
         val options = (Test / forkOptions).value
-        new Tests.Group(name, tests, Tests.SubProcess(options))
+        // checks the JNI providers' C code; JNA's own native code fails these checks
+        val jniOptions =
+          if (name.endsWith("JNI")) options.withRunJVMOptions(options.runJVMOptions :+ "-Xcheck:jni")
+          else options
+        new Tests.Group(name, tests, Tests.SubProcess(jniOptions))
     }
     .toSeq
 }
