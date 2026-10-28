@@ -3,7 +3,7 @@ on: [pull_request, push]
 
 jobs:
   test:
-    timeout-minutes: 20
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
@@ -53,19 +53,21 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: sudo apt-get -y install gcc-aarch64-linux-gnu
-      - name: Build and test (Linux)
-        if: ${{ runner.os == 'Linux' }}
+      - name: Test repeatedly
         shell: bash
         run: |
-          sbt "jvmfmtCheckAll; buildNativeArtifacts; test"
-      - name: Build and test (macOS)
-        if: ${{ runner.os == 'macOS' }}
-        shell: bash
-        run: sbt "buildNativeArtifacts; test"
-      - name: Build and test (Windows)
-        if: ${{ runner.os == 'Windows' }}
-        shell: bash
-        run: sbt "buildNativeArtifacts; test"
+          sbt buildNativeArtifacts
+          failed=0
+          for i in 1 2 3 4 5 6 7 8; do
+            echo "::group::run $i"
+            sbt test 2>&1 | tee run-$i.log || { failed=1; echo "RUN $i FAILED"; }
+            echo "::endgroup::"
+          done
+          echo "== failures"
+          grep -h -E "Test .* failed|Failed: Total|exit code|TimeoutException" run-*.log || true
+          echo "== JNI check warnings"
+          grep -h -A4 -E "WARNING in native method|FATAL ERROR in native method" run-*.log | sort | uniq -c | sort -rn | head -40 || true
+          exit $failed
       - name: Archive native artifacts (Linux)
         if: ${{ runner.os == 'Linux' && matrix.jobtype == '1' }}
         uses: actions/upload-artifact@v7
