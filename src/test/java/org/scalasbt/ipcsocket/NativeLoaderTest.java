@@ -3,6 +3,7 @@ package org.scalasbt.ipcsocket;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.file.attribute.PosixFilePermissions;
 import org.junit.Test;
 import static org.junit.Assert.*;
@@ -26,6 +27,21 @@ public class NativeLoaderTest {
       Files.deleteIfExists(mine);
       Files.deleteIfExists(shared);
       Files.deleteIfExists(parent);
+    }
+  }
+
+  @Test
+  public void stickyRootDirectoryIsSafeParent() throws IOException {
+    if (isWin) return;
+    // on macOS, /tmp is a symlink to /private/tmp
+    Path tmp =
+        Files.isSymbolicLink(Paths.get("/tmp")) ? Paths.get("/private/tmp") : Paths.get("/tmp");
+    assertTrue(NativeLoader.isSharedStickyDirectory(tmp));
+    Path mine = Files.createTempDirectory("ipcsocket-loader");
+    try {
+      assertFalse(NativeLoader.isSharedStickyDirectory(mine));
+    } finally {
+      Files.deleteIfExists(mine);
     }
   }
 }

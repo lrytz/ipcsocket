@@ -62,17 +62,22 @@ class NativeLoader {
 
   /**
    * The directory to extract the library to. Without XDG_RUNTIME_DIR, runtimeDir() has a
-   * predictable name in a shared temp directory. If another user created it first, they could swap
-   * the library before it is loaded, so then use a fresh private directory instead.
+   * predictable name in a shared temp directory, and so has the directory sbt passes in
+   * sbt.ipcsocket.tmpdir. If another user created it first, they could swap the library before it
+   * is loaded, so then use a fresh private directory instead.
    */
   private static Path extractionDir() throws IOException {
     final Path dir = runtimeDir();
     final boolean posix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
-    if (System.getProperty("sbt.ipcsocket.tmpdir") != null || !posix) {
+    if (!posix) {
       return Files.createDirectories(dir);
     }
-    Files.createDirectories(dir.getParent().getParent());
-    if (isPrivateDirectory(dir.getParent()) && isPrivateDirectory(dir)) {
+    final Path parent = dir.toAbsolutePath().getParent();
+    if (parent.getParent() != null) {
+      Files.createDirectories(parent.getParent());
+    }
+    if ((isPrivateDirectory(parent) || isSharedStickyDirectory(parent))
+        && isPrivateDirectory(dir)) {
       return dir;
     }
     final Path fallback = Files.createTempDirectory(tempFilePrefix);
@@ -94,6 +99,22 @@ class NativeLoader {
         && attrs.owner().getName().equals(System.getProperty("user.name"))
         && !perms.contains(PosixFilePermission.GROUP_WRITE)
         && !perms.contains(PosixFilePermission.OTHERS_WRITE);
+  }
+
+  /**
+   * A directory like /tmp: owned by root and sticky, so other users can't rename or delete what we
+   * create in it.
+   */
+  static boolean isSharedStickyDirectory(Path dir) {
+    try {
+      final int mode = (Integer) Files.getAttribute(dir, "unix:mode", LinkOption.NOFOLLOW_LINKS);
+      final PosixFileAttributes attrs =
+          Files.readAttributes(dir, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+      final int sticky = 01000;
+      return attrs.isDirectory() && attrs.owner().getName().equals("root") && (mode & sticky) != 0;
+    } catch (final IOException | UnsupportedOperationException | IllegalArgumentException e) {
+      return false;
+    }
   }
 
   private static final String tempFilePrefix = "libsbtipcsocket";
