@@ -57,15 +57,23 @@ jobs:
         if: ${{ runner.os == 'Linux' }}
         shell: bash
         run: |
-          sbt "jvmfmtCheckAll; buildNativeArtifacts; test"
+          sbt "jvmfmtCheckAll; buildNativeArtifacts; test" 2>&1 | tee test.log
+          # -Xcheck:jni only warns, so fail on warnings raised in the JNI providers
+          ! grep -A1 "in native method" test.log | grep "org.scalasbt.ipcsocket.JNI"
       - name: Build and test (macOS)
         if: ${{ runner.os == 'macOS' }}
         shell: bash
-        run: sbt "buildNativeArtifacts; test"
+        run: |
+          sbt "buildNativeArtifacts; test" 2>&1 | tee test.log
+          # -Xcheck:jni only warns, so fail on warnings raised in the JNI providers
+          ! grep -A1 "in native method" test.log | grep "org.scalasbt.ipcsocket.JNI"
       - name: Build and test (Windows)
         if: ${{ runner.os == 'Windows' }}
         shell: bash
-        run: sbt "buildNativeArtifacts; test"
+        run: |
+          sbt "buildNativeArtifacts; test" 2>&1 | tee test.log
+          # -Xcheck:jni only warns, so fail on warnings raised in the JNI providers
+          ! grep -A1 "in native method" test.log | grep "org.scalasbt.ipcsocket.JNI"
       - name: Archive native artifacts (Linux)
         if: ${{ runner.os == 'Linux' && matrix.jobtype == '1' }}
         uses: actions/upload-artifact@v7
