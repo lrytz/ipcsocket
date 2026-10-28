@@ -10,13 +10,20 @@ import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryNotEmptyException;
+import java.nio.file.FileAlreadyExistsException;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.FileVisitor;
 import java.nio.file.FileVisitResult;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
+import java.nio.file.attribute.PosixFileAttributes;
+import java.nio.file.attribute.PosixFilePermission;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Set;
 
 class NativeLoader {
   private static final AtomicBoolean loaded = new AtomicBoolean(false);
@@ -53,6 +60,42 @@ class NativeLoader {
     }
   }
 
+  /**
+   * The directory to extract the library to. Without XDG_RUNTIME_DIR, runtimeDir() has a
+   * predictable name in a shared temp directory. If another user created it first, they could swap
+   * the library before it is loaded, so then use a fresh private directory instead.
+   */
+  private static Path extractionDir() throws IOException {
+    final Path dir = runtimeDir();
+    final boolean posix = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    if (System.getProperty("sbt.ipcsocket.tmpdir") != null || !posix) {
+      return Files.createDirectories(dir);
+    }
+    Files.createDirectories(dir.getParent().getParent());
+    if (isPrivateDirectory(dir.getParent()) && isPrivateDirectory(dir)) {
+      return dir;
+    }
+    final Path fallback = Files.createTempDirectory(tempFilePrefix);
+    fallback.toFile().deleteOnExit();
+    return fallback;
+  }
+
+  /** Creates dir if needed, and checks that only this user can change what is in it. */
+  static boolean isPrivateDirectory(Path dir) throws IOException {
+    try {
+      Files.createDirectory(
+          dir, PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")));
+    } catch (final FileAlreadyExistsException e) {
+    }
+    final PosixFileAttributes attrs =
+        Files.readAttributes(dir, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    final Set<PosixFilePermission> perms = attrs.permissions();
+    return attrs.isDirectory()
+        && attrs.owner().getName().equals(System.getProperty("user.name"))
+        && !perms.contains(PosixFilePermission.GROUP_WRITE)
+        && !perms.contains(PosixFilePermission.OTHERS_WRITE);
+  }
+
   private static final String tempFilePrefix = "libsbtipcsocket";
 
   static void load() throws UnsatisfiedLinkError {
@@ -81,7 +124,7 @@ class NativeLoader {
         final URL url = NativeLoader.class.getClassLoader().getResource(resource);
         if (url == null) throw new UnsatisfiedLinkError(resource + " not found on classpath");
         try {
-          final Path base = Files.createDirectories(runtimeDir());
+          final Path base = extractionDir();
           final Path output = Files.createTempFile(base, tempFilePrefix, extension);
           try (final InputStream in = url.openStream();
               final FileChannel channel = FileChannel.open(output, StandardOpenOption.WRITE)) {
@@ -109,6 +152,10 @@ class NativeLoader {
             throw e;
           }
           loaded.set(true);
+          // Don't clean up a shared directory that failed the checks in extractionDir
+          if (!base.equals(runtimeDir())) {
+            return;
+          }
           final Thread thread = new Thread(new CleanupRunnable(), "ipcsocket-jni-cleanup");
           thread.setDaemon(true);
           thread.start();
