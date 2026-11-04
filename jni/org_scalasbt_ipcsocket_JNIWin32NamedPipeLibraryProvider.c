@@ -30,16 +30,16 @@
 
 #define FILL_ERROR(prefix, buf)                                                \
   do {                                                                         \
-    char err[sizeof(buf)];                                                     \
+    DWORD _code = GetLastError();                                              \
+    char err[sizeof(buf)] = {0};                                               \
     FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,  \
-                  NULL, GetLastError(),                                        \
-                  MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), err, sizeof(buf), \
-                  NULL);                                                       \
+                  NULL, _code, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), err, \
+                  sizeof(err), NULL);                                          \
     size_t len = strnlen(err, sizeof(err));                                    \
-    if (err[len - 2] == '\r')                                                  \
+    if (len >= 2 && err[len - 2] == '\r')                                      \
       err[len - 2] = '\0';                                                     \
     snprintf(buf, sizeof(buf), prefix ? prefix : "%s (error code %ld)", err,   \
-             GetLastError());                                                  \
+             _code);                                                           \
   } while (0);
 
 #define LOGON_DACL 2 // must match the value in Win32SecurityLevel.java
@@ -151,44 +151,58 @@ Java_org_scalasbt_ipcsocket_JNIWin32NamedPipeLibraryProvider_readNative(
   HANDLE handle = (HANDLE)hFile;
   OVERLAPPED olap = {0};
   olap.hEvent = (HANDLE)waitable;
+  char buf[256];
+  BOOL timed_out = FALSE;
 
+  if (length == 0)
+    return 0;
+  LPVOID read_buffer = HeapAlloc(GetProcessHeap(), 0, length);
+  if (read_buffer == NULL) {
+    THROW_IO(NULL, "Couldn't allocate the read buffer");
+    return -1;
+  }
   DWORD bytes_read = 0;
-  LPVOID read_buffer = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, length);
-  BOOL immediate = ReadFile(handle, read_buffer, length, &bytes_read, &olap);
-  if (!immediate) {
+  if (!ReadFile(handle, read_buffer, length, NULL, &olap)) {
     if (GetLastError() != ERROR_IO_PENDING) {
-      char buf[256];
       FILL_ERROR("ReadFile() failed: %s (error code %ld)", buf);
-      THROW_IO(NULL, buf);
+      goto fail;
     }
-    if (timeoutMillis > 0) {
-      DWORD res = WaitForSingleObject(olap.hEvent, timeoutMillis);
-      if (res == WAIT_TIMEOUT) {
-        CancelIoEx(handle, NULL);
-        char buf[256];
-        FILL_ERROR("ReadFile() timed out: %s (error code %ld)", buf);
-        THROW_SOCKET_TIMEOUT(NULL, buf);
-      }
+    if (timeoutMillis > 0 &&
+        WaitForSingleObject(olap.hEvent, timeoutMillis) == WAIT_TIMEOUT) {
+      // Cancel only this read, and wait below until the kernel is done with
+      // olap and read_buffer. A write on another thread carries on.
+      CancelIoEx(handle, &olap);
+      timed_out = TRUE;
     }
   }
   if (!GetOverlappedResult(handle, &olap, &bytes_read, TRUE)) {
-    char buf[256];
+    if (timed_out) {
+      HeapFree(GetProcessHeap(), 0, read_buffer);
+      snprintf(buf, sizeof(buf), "ReadFile() timed out after %d ms",
+               (int)timeoutMillis);
+      THROW_SOCKET_TIMEOUT(NULL, buf);
+      return -1;
+    }
     FILL_ERROR(
         "GetOverlappedResult() failed for read operation: %s (error code %ld)",
         buf);
-    THROW_IO(NULL, buf);
+    goto fail;
   }
+  // If data arrived before the cancel took effect, the read succeeded after all
   if (strict && (bytes_read != (DWORD)length)) {
-    char buf[256];
-    snprintf(buf, 256,
+    snprintf(buf, sizeof(buf),
              "ReadFile() read less bytes than requested: expected %d bytes, "
              "but read %ld bytes",
-             length, bytes_read);
-    THROW_IO(NULL, buf);
+             (int)length, bytes_read);
+    goto fail;
   }
   (*env)->SetByteArrayRegion(env, buffer, offset, bytes_read, read_buffer);
   HeapFree(GetProcessHeap(), 0, read_buffer);
   return bytes_read;
+
+fail:
+  HeapFree(GetProcessHeap(), 0, read_buffer);
+  THROW_IO(NULL, buf);
   return -1;
 }
 
@@ -202,36 +216,41 @@ Java_org_scalasbt_ipcsocket_JNIWin32NamedPipeLibraryProvider_writeNative(
     JNIEnv *env, UNUSED jobject object, jlong waitable, jlong hHandle,
     jbyteArray buffer, jint offset, jint length) {
   HANDLE handle = (HANDLE)hHandle;
-  OVERLAPPED olap;
+  OVERLAPPED olap = {0};
   olap.hEvent = (HANDLE)waitable;
+  char buf[256];
 
+  if (length == 0)
+    return;
   jbyte *bytes = (*env)->GetByteArrayElements(env, buffer, 0);
-  BOOL immediate =
-      WriteFile(handle, bytes + (DWORD)offset, (DWORD)length, NULL, &olap);
-  if (!immediate) {
+  if (bytes == NULL)
+    return; // OutOfMemoryError is pending
+  DWORD bytes_written = 0;
+  if (!WriteFile(handle, bytes + offset, (DWORD)length, NULL, &olap)) {
     if (GetLastError() != ERROR_IO_PENDING) {
-      char buf[256];
-      FILL_ERROR("ReadFile() failed: %s (error code %ld)", buf);
-      THROW_IO(NULL, buf);
+      FILL_ERROR("WriteFile() failed: %s (error code %ld)", buf);
+      goto fail;
     }
   }
-  DWORD bytes_written = 0;
   if (!GetOverlappedResult(handle, &olap, &bytes_written, TRUE)) {
-    char buf[256];
     FILL_ERROR(
         "GetOverlappedResult() failed for write operation: %s (error code %ld)",
         buf);
-    THROW_IO(NULL, buf);
+    goto fail;
   }
   if (bytes_written != (DWORD)length) {
-    char buf[256];
-    snprintf(buf, 256,
+    snprintf(buf, sizeof(buf),
              "WriteFile() wrote less bytes than requested: expected %d bytes, "
              "but wrote %ld bytes",
-             length, bytes_written);
-    THROW_IO(NULL, buf);
+             (int)length, bytes_written);
+    goto fail;
   }
   (*env)->ReleaseByteArrayElements(env, buffer, bytes, JNI_ABORT);
+  return;
+
+fail:
+  (*env)->ReleaseByteArrayElements(env, buffer, bytes, JNI_ABORT);
+  THROW_IO(NULL, buf);
 }
 
 JNIEXPORT jboolean JNICALL
