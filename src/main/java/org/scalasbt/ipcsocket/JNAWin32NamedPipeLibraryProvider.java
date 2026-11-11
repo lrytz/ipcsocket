@@ -2,7 +2,6 @@ package org.scalasbt.ipcsocket;
 
 import java.io.IOException;
 import java.net.SocketTimeoutException;
-import java.nio.ByteBuffer;
 
 import com.sun.jna.*;
 import com.sun.jna.platform.win32.WinError;
@@ -31,7 +30,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
 
     static Handle make(final HANDLE handle) throws IOException {
       if (handle == Win32NamedPipeLibrary.INVALID_HANDLE_VALUE) {
-        throw new IOException("Invalid handle");
+        throw new IOException("Invalid handle (" + Native.getLastError() + ")");
       }
       return new JNAHandle(handle);
     }
@@ -110,7 +109,7 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     IntByReference n = new IntByReference();
     boolean ok = delegate.PeekNamedPipe(handle, null, 0, null, n, null);
     if (!ok) {
-      int lastError = delegate.GetLastError();
+      int lastError = Native.getLastError();
       throw new IOException("PeekNamedPipe() failed: " + lastError);
     }
     return n.getValue();
@@ -126,6 +125,9 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
       boolean requireStrictLength,
       int timeoutMillis)
       throws IOException {
+    if (len == 0) {
+      return 0;
+    }
     HANDLE readerWaitable = getHandle(waitable);
     HANDLE handle = getHandle(hFile);
     Memory readBuffer = new Memory(len);
@@ -134,60 +136,86 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     olap.hEvent = readerWaitable;
     olap.write();
 
-    boolean immediate = delegate.ReadFile(handle, readBuffer, len, null, olap.getPointer());
-    if (!immediate) {
-      int lastError = delegate.GetLastError();
-      if (lastError != WinError.ERROR_IO_PENDING) {
-        throw new IOException("ReadFile() failed: " + lastError);
-      }
-      if (timeoutMillis > 0) {
-        int res = delegate.WaitForSingleObject(olap.hEvent, timeoutMillis);
-        if (res == WinError.WAIT_TIMEOUT) {
-          throw new SocketTimeoutException("ReadFile() timed out " + res);
+    boolean timedOut = false;
+    int actualLen;
+    try {
+      boolean immediate = delegate.ReadFile(handle, readBuffer, len, null, olap.getPointer());
+      if (!immediate) {
+        int lastError = Native.getLastError();
+        if (lastError != WinError.ERROR_IO_PENDING) {
+          throw new IOException("ReadFile() failed: " + lastError);
+        }
+        if (timeoutMillis > 0) {
+          int res = delegate.WaitForSingleObject(olap.hEvent, timeoutMillis);
+          if (res == WinError.WAIT_TIMEOUT) {
+            // Cancel only this read: another thread may be writing to the pipe. The kernel still
+            // owns olap and readBuffer, so wait below until the cancel completes.
+            delegate.CancelIoEx(handle, olap.getPointer());
+            timedOut = true;
+          }
         }
       }
+      IntByReference r = new IntByReference();
+      if (!delegate.GetOverlappedResult(handle, olap.getPointer(), r, true)) {
+        int lastError = Native.getLastError();
+        if (timedOut && lastError == WinError.ERROR_OPERATION_ABORTED) {
+          throw new SocketTimeoutException("ReadFile() timed out after " + timeoutMillis + " ms");
+        }
+        throw new IOException("GetOverlappedResult() failed for read operation: " + lastError);
+      }
+      // If data arrived before the cancel took effect, the read succeeded after all
+      actualLen = r.getValue();
+      if (requireStrictLength && (actualLen != len)) {
+        throw new IOException(
+            "ReadFile() read less bytes than requested: expected "
+                + len
+                + " bytes, but read "
+                + actualLen
+                + " bytes");
+      }
+      readBuffer.read(0, buffer, offset, actualLen);
+    } finally {
+      // The kernel is done with readBuffer: GetOverlappedResult has returned, or ReadFile failed
+      // without starting a read
+      readBuffer.close();
     }
-    IntByReference r = new IntByReference();
-    if (!delegate.GetOverlappedResult(handle, olap.getPointer(), r, true)) {
-      int lastError = delegate.GetLastError();
-      throw new IOException("GetOverlappedResult() failed for read operation: " + lastError);
-    }
-    int actualLen = r.getValue();
-    if (requireStrictLength && (actualLen != len)) {
-      throw new IOException(
-          "ReadFile() read less bytes than requested: expected "
-              + len
-              + " bytes, but read "
-              + actualLen
-              + " bytes");
-    }
-    byte[] byteArray = readBuffer.getByteArray(0, actualLen);
-    System.arraycopy(byteArray, 0, buffer, offset, actualLen);
     return actualLen;
   }
 
   @Override
   public void write(Handle waitable, Handle hHandle, byte[] b, int off, int len)
       throws IOException {
+    if (len == 0) {
+      return;
+    }
     HANDLE writerWaitable = getHandle(waitable);
     HANDLE handle = getHandle(hHandle);
-    ByteBuffer data = ByteBuffer.wrap(b, off, len);
+    // Not a heap ByteBuffer: JNA would copy it to memory that it frees when
+    // WriteFile returns, while a pending write may still read from it.
+    Memory data = new Memory(len);
+    data.write(0, b, off, len);
 
     OVERLAPPED olap = new OVERLAPPED();
     olap.hEvent = writerWaitable;
     olap.write();
 
-    boolean immediate = delegate.WriteFile(handle, data, len, null, olap.getPointer());
-    if (!immediate) {
-      int lastError = delegate.GetLastError();
-      if (lastError != WinError.ERROR_IO_PENDING) {
-        throw new IOException("WriteFile() failed: " + lastError);
-      }
-    }
     IntByReference written = new IntByReference();
-    if (!delegate.GetOverlappedResult(handle, olap.getPointer(), written, true)) {
-      int lastError = delegate.GetLastError();
-      throw new IOException("GetOverlappedResult() failed for write operation: " + lastError);
+    try {
+      boolean immediate = delegate.WriteFile(handle, data, len, null, olap.getPointer());
+      if (!immediate) {
+        int lastError = Native.getLastError();
+        if (lastError != WinError.ERROR_IO_PENDING) {
+          throw new IOException("WriteFile() failed: " + lastError);
+        }
+      }
+      if (!delegate.GetOverlappedResult(handle, olap.getPointer(), written, true)) {
+        int lastError = Native.getLastError();
+        throw new IOException("GetOverlappedResult() failed for write operation: " + lastError);
+      }
+    } finally {
+      // Keeps data reachable until the write has completed, which it has once
+      // GetOverlappedResult returns
+      data.close();
     }
     if (written.getValue() != len) {
       throw new IOException("WriteFile() wrote less bytes than requested");
@@ -217,9 +245,13 @@ class JNAWin32NamedPipeLibraryProvider implements Win32NamedPipeLibraryProvider 
     return JNAHandle.make(delegate.CreateEvent(null, bManualReset, bInitialState, lpName));
   }
 
+  /**
+   * The error JNA saved right after the last native call on this thread. Calling kernel32's
+   * GetLastError through JNA can return a value the JVM has overwritten since.
+   */
   @Override
   public int GetLastError() {
-    return delegate.GetLastError();
+    return Native.getLastError();
   }
 
   @Override
