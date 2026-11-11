@@ -126,6 +126,14 @@ public class Win32NamedPipeSocket extends Socket {
   @Override
   public void shutdownOutput() throws IOException {}
 
+  // The JNI provider passes off and len to native code unchecked
+  private static void checkBounds(byte[] b, int off, int len) {
+    if (off < 0 || len < 0 || len > b.length - off) {
+      throw new IndexOutOfBoundsException(
+          "off " + off + ", len " + len + ", array length " + b.length);
+    }
+  }
+
   private class Win32NamedPipeSocketInputStream extends InputStream {
     private final Handle handle;
 
@@ -152,6 +160,7 @@ public class Win32NamedPipeSocket extends Socket {
 
     @Override
     public int read(byte[] b, int off, int len) throws IOException {
+      checkBounds(b, off, len);
       return provider.read(
           readerWaitable, handle, b, off, len, requireStrictLength, getSoTimeout());
     }
@@ -171,6 +180,7 @@ public class Win32NamedPipeSocket extends Socket {
 
     @Override
     public void write(byte[] b, int off, int len) throws IOException {
+      checkBounds(b, off, len);
       provider.write(writerWaitable, handle, b, off, len);
     }
   }
